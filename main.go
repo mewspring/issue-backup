@@ -148,6 +148,29 @@ func backupIssues(ownerName, repoName, token string) error {
 			fmt.Println()
 		}
 	}
+	// Get pull requests.
+	pullRequests, err := c.getPullRequests(ownerName, repoName)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	for _, pullRequest := range pullRequests {
+		dbg.Printf("pull request #%d", pullRequest.GetNumber())
+		if err := jsonutil.Write(os.Stdout, pullRequest); err != nil {
+			return errors.WithStack(err)
+		}
+		fmt.Println()
+		if pullRequest.GetComments() > 0 {
+			dbg.Printf("%d comments of pull request #%d", pullRequest.GetComments(), pullRequest.GetNumber())
+			comments, err := c.getPullRequestComments(ownerName, repoName, pullRequest.GetNumber())
+			if err != nil {
+				return errors.WithStack(err)
+			}
+			if err := jsonutil.Write(os.Stdout, comments); err != nil {
+				return errors.WithStack(err)
+			}
+			fmt.Println()
+		}
+	}
 	return nil
 }
 
@@ -175,9 +198,12 @@ func newClient(token string) *Client {
 	}
 }
 
+// --- [ issues ] --------------------------------------------------------------
+
 // getIssues returns the issues of the given owner/repo.
 func (c *Client) getIssues(ownerName, repoName string) ([]*github.Issue, error) {
 	opt := &github.IssueListByRepoOptions{
+		State: "all",
 		ListOptions: github.ListOptions{
 			PerPage: 100,
 		},
@@ -227,6 +253,74 @@ func (c *Client) getIssueComments(ownerName, repoName string, issueNumber int) (
 			}
 			if err != nil {
 				warn.Printf("unable to get comments of %s:%s for issue #%d (page %d); %v", ownerName, repoName, issueNumber, page, err)
+				break // return partial results
+			}
+		}
+		allComments = append(allComments, comments...)
+		if resp.NextPage == 0 {
+			break
+		}
+		opt.Page = resp.NextPage
+		page++
+	}
+	return allComments, nil
+}
+
+// --- [ pull requests ] -------------------------------------------------------
+
+// getPullRequests returns the pull requests of the given owner/repo.
+func (c *Client) getPullRequests(ownerName, repoName string) ([]*github.PullRequest, error) {
+	opt := &github.PullRequestListOptions{
+		State: "all",
+		ListOptions: github.ListOptions{
+			PerPage: 100,
+		},
+	}
+	// get commits from all pages.
+	var allPullRequests []*github.PullRequest
+	page := 1
+	for {
+		pullRequests, resp, err := c.client.PullRequests.List(c.ctx, ownerName, repoName, opt)
+		if err != nil {
+			for waitForRateLimitReset(err) {
+				// try again after rate limit resets.
+				pullRequests, resp, err = c.client.PullRequests.List(c.ctx, ownerName, repoName, opt)
+			}
+			if err != nil {
+				warn.Printf("unable to get pull requests of %s:%s (page %d); %v", ownerName, repoName, page, err)
+				break // return partial results
+			}
+		}
+		allPullRequests = append(allPullRequests, pullRequests...)
+		if resp.NextPage == 0 {
+			break
+		}
+		opt.Page = resp.NextPage
+		page++
+	}
+	return allPullRequests, nil
+}
+
+// getPullRequestComments returns the comments for the specified pull request number of the
+// given owner/repo.
+func (c *Client) getPullRequestComments(ownerName, repoName string, pullRequestNumber int) ([]*github.PullRequestComment, error) {
+	opt := &github.PullRequestListCommentsOptions{
+		ListOptions: github.ListOptions{
+			PerPage: 100,
+		},
+	}
+	// get commits from all pages.
+	var allComments []*github.PullRequestComment
+	page := 1
+	for {
+		comments, resp, err := c.client.PullRequests.ListComments(c.ctx, ownerName, repoName, pullRequestNumber, opt)
+		if err != nil {
+			for waitForRateLimitReset(err) {
+				// try again after rate limit resets.
+				comments, resp, err = c.client.PullRequests.ListComments(c.ctx, ownerName, repoName, pullRequestNumber, opt)
+			}
+			if err != nil {
+				warn.Printf("unable to get comments of %s:%s for pull request #%d (page %d); %v", ownerName, repoName, pullRequestNumber, page, err)
 				break // return partial results
 			}
 		}
